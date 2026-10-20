@@ -1,4 +1,4 @@
-name: Cross-compile and release MIPS32 BE
+name: Cross-compile and release MIPS32 LE
 
 on:
   push:
@@ -22,9 +22,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            gcc-mips-linux-gnu binutils-mips-linux-gnu qemu-user file
+            gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu qemu-user file
 
-      - name: Cross-compile static MIPS32 big-endian binary
+      - name: Cross-compile static MIPS32 little-endian binary
         run: make
 
       - name: Verify ELF target and static linking
@@ -34,28 +34,28 @@ jobs:
           file dist/switchmirror
           readelf -h dist/switchmirror
           readelf -h dist/switchmirror | grep -Eq 'Class:.*ELF32'
-          readelf -h dist/switchmirror | grep -Eq 'Data:.*big endian'
+          readelf -h dist/switchmirror | grep -Eq 'Data:.*little endian'
           readelf -h dist/switchmirror | grep -Eq 'Machine:.*MIPS'
           if readelf -l dist/switchmirror | grep -q INTERP; then
             echo 'Unexpected dynamic interpreter' >&2
             exit 1
           fi
 
-      - name: Smoke-test CLI with QEMU MIPS
+      - name: Smoke-test CLI with QEMU MIPS Little Endian
         run: make smoke
 
       - name: Package executable and checksum
         run: |
-          cp dist/switchmirror dist/switchmirror-mips32-be
+          cp dist/switchmirror dist/switchmirror-mips32-le
           cd dist
-          sha256sum switchmirror-mips32-be > SHA256SUMS
+          sha256sum switchmirror-mips32-le > SHA256SUMS
 
       - name: Upload workflow artifact for debugging
         uses: actions/upload-artifact@v4
         with:
-          name: switchmirror-mips32-be
+          name: switchmirror-mips32-le
           path: |
-            dist/switchmirror-mips32-be
+            dist/switchmirror-mips32-le
             dist/SHA256SUMS
             README.md
           if-no-files-found: error
@@ -78,10 +78,10 @@ jobs:
             prerelease_args=(--prerelease)
           fi
           gh release create "${tag}" \
-            dist/switchmirror-mips32-be \
+            dist/switchmirror-mips32-le \
             dist/SHA256SUMS \
             --target "${GITHUB_SHA}" \
             --title "${title}" \
-            --notes "Experimental static MIPS32 big-endian router binary built from commit ${GITHUB_SHA}. Untested on actual RT-N66U hardware. Run 'probe' first. SHA256SUMS included." \
+            --notes "Experimental static MIPS32 little-endian router binary built from commit ${GITHUB_SHA}. Untested on actual RT-N66U hardware. Run 'probe' first. SHA256SUMS included." \
             "${prerelease_args[@]}"
           echo "Release URL: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}" >> "${GITHUB_STEP_SUMMARY}"
