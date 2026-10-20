@@ -1,371 +1,323 @@
 /*
- * Inspect BCM53125 switch mirroring registers on MIPS Linux o32.
+ * Broadcom BCM53xx switch mirroring helper (experimental).
  *
- * Probe the driver before modifying switch configuration.
- * Preserve the original values and print a restore command.
+ * Target: Asus RT-N66U, DD-WRT Linux MIPS32 little endian.
+ * Uses the system C runtime for correct MIPS process startup and IOCTL ABI.
  *
- * CAUTION: Test this tool on the target router before trusting register writes.
+ * "probe" reads mirror config without writing mirror config registers;
+ * accessing switch registers does update the MDIO pseudo-PHY page/address.
+ *
+ * This program has NOT been validated on physical router hardware.
+ * License: MIT.
  */
+#define _DEFAULT_SOURCE 1
 
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef unsigned char u8;
+#include <errno.h>
+#include <net/if.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <linux/mii.h>
+#include <linux/sockios.h>
 
-#define SYS_WRITE 4004
-#define SYS_CLOSE 4006
-#define SYS_IOCTL 4054
-#define SYS_SOCKET 4183
+#ifndef SIOCDEVPRIVATE
+#define SIOCDEVPRIVATE 0x89F0
+#endif
 
-#define AF_INET 2
-#define SOCK_DGRAM 2
-#define SIOCDEVPRIVATE 0x89f0
 #define SIOCGETCPHYRD (SIOCDEVPRIVATE + 9)
 #define SIOCSETCPHYWR (SIOCDEVPRIVATE + 10)
-#define SIOCGMIIREG 0x8948
-#define SIOCSMIIREG 0x8949
 
-#define PHY_ADDR 0x1e
-#define REG_PAGE 0x10
-#define REG_ADDR 0x11
-#define REG_DATA 0x18
-#define PAGE_ENABLE 1
-#define ADDR_READ 2
-#define ADDR_WRITE 1
+#define SWITCH_PHY 0x1e
+#define MDIO_PAGE 0x10
+#define MDIO_ADDR 0x11
+#define MDIO_DATA 0x18
+#define MDIO_PAGE_ENABLE 1
+#define MDIO_OP_READ 2
+#define MDIO_OP_WRITE 1
 
 #define MGMT_PAGE 0x02
-#define MIRROR_CAP 0x10
-#define MIRROR_ING 0x12
-#define MIRROR_EGR 0x1c
-#define MIRROR_ENABLE_BIT 0x8000u
+#define MIR_CAP 0x10
+#define MIR_ING 0x12
+#define MIR_EGR 0x1c
 
-struct ifreq_min {
-    char name[16];
-    union {
-        void *data;
-        u8 raw[16];
-    } payload;
-};
+#define MIR_ENABLED 0x8000u
+#define CPU_PORT 8
+#define WAN_PORT 0
+#define ICOTERA_PORT 4
 
-struct mii_data {
-    u16 phy_id;
-    u16 reg_num;
-    u16 val_in;
-    u16 val_out;
-};
+enum access_mode { MODE_NONE, MODE_ET_PRIVATE, MODE_STANDARD_MII };
 
-static long raw_syscall3(long number, long a, long b, long c)
+static int socket_fd = -1;
+static enum access_mode mode = MODE_NONE;
+static const char *if_name = "eth0";
+
+static int mdio_ioctl(uint16_t reg, uint16_t *value, int is_write)
 {
-    register long v0 __asm__("$2") = number;
-    register long a0 __asm__("$4") = a;
-    register long a1 __asm__("$5") = b;
-    register long a2 __asm__("$6") = c;
-    register long a3 __asm__("$7") = 0;
-    __asm__ volatile ("syscall" : "+r"(v0), "+r"(a3)
-                      : "r"(a0), "r"(a1), "r"(a2)
-                      : "$1", "$3", "memory");
-    return a3 ? -v0 : v0;
-}
+    struct ifreq request;
+    int error;
+    memset(&request, 0, sizeof(request));
+    strncpy(request.ifr_name, if_name, IFNAMSIZ - 1);
 
-static unsigned length(const char *s)
-{
-    unsigned n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static void print(const char *s)
-{
-    raw_syscall3(SYS_WRITE, 1, (long)s, length(s));
-}
-
-static void hex16(u16 value)
-{
-    char out[7];
-    const char digits[] = "0123456789abcdef";
-    int i;
-    out[0] = '0';
-    out[1] = 'x';
-    for (i = 0; i < 4; i++) {
-        out[2 + i] = digits[(value >> (12 - 4 * i)) & 15];
-    }
-    out[6] = 0;
-    print(out);
-}
-
-static void print_error(const char *action, long error)
-{
-    print(action);
-    print(" failed, errno=");
-    hex16((u16)(-error));
-    print("\n");
-}
-
-static int equal(const char *left, const char *right)
-{
-    while (*left && *right && *left == *right) {
-        left++;
-        right++;
-    }
-    return *left == *right;
-}
-
-static int parse_hex16(const char *input, u16 *output)
-{
-    u32 value = 0;
-    int digits_seen = 0;
-    if (input[0] == '0' && (input[1] == 'x' || input[1] == 'X')) input += 2;
-    while (*input) {
-        u32 digit;
-        if (*input >= '0' && *input <= '9') digit = (u32)(*input - '0');
-        else if (*input >= 'a' && *input <= 'f') digit = (u32)(*input - 'a' + 10);
-        else if (*input >= 'A' && *input <= 'F') digit = (u32)(*input - 'A' + 10);
-        else return 0;
-        if (++digits_seen > 4) return 0;
-        value = (value << 4) | digit;
-        input++;
-    }
-    if (!digits_seen) return 0;
-    *output = (u16)value;
-    return 1;
-}
-
-static int ioctl_mode = 0;
-static long sockfd = -1;
-
-static int mdio(u16 register_number, u16 *value, int write)
-{
-    struct ifreq_min ifr = {0};
-    long result;
-    ifr.name[0] = 'e';
-    ifr.name[1] = 't';
-    ifr.name[2] = 'h';
-    ifr.name[3] = '0';
-    if (ioctl_mode == 1) {
-        int args[2];
-        args[0] = register_number;
-        args[1] = *value;
-        ifr.payload.data = args;
-        result = raw_syscall3(SYS_IOCTL, sockfd,
-                              write ? SIOCSETCPHYWR : SIOCGETCPHYRD,
-                              (long)&ifr);
-        if (result < 0) return (int)result;
-        *value = (u16)args[1];
+    if (mode == MODE_ET_PRIVATE) {
+        int args[2] = { reg, *value };
+        request.ifr_data = (void *)args;
+        error = ioctl(socket_fd,
+                      is_write ? SIOCSETCPHYWR : SIOCGETCPHYRD, &request);
+        if (error < 0) return -errno;
+        if (!is_write) *value = (uint16_t)args[1];
         return 0;
     }
-    {
-        struct mii_data *mii = (struct mii_data *)&ifr.payload.raw[0];
-        mii->phy_id = PHY_ADDR;
-        mii->reg_num = register_number;
+
+    if (mode == MODE_STANDARD_MII) {
+        struct mii_ioctl_data *mii = (struct mii_ioctl_data *)&request.ifr_data;
+        mii->phy_id = SWITCH_PHY;
+        mii->reg_num = reg;
         mii->val_in = *value;
-        mii->val_out = 0;
-        result = raw_syscall3(SYS_IOCTL, sockfd,
-                              write ? SIOCSMIIREG : SIOCGMIIREG,
-                              (long)&ifr);
-        if (result < 0) return (int)result;
-        *value = mii->val_out;
+        error = ioctl(socket_fd,
+                      is_write ? SIOCSMIIREG : SIOCGMIIREG, &request);
+        if (error < 0) return -errno;
+        if (!is_write) *value = mii->val_out;
         return 0;
     }
+
+    return -EINVAL;
 }
 
-static int mdio_write(u16 reg, u16 value)
-{
-    return mdio(reg, &value, 1);
-}
-
-static int mdio_read(u16 reg, u16 *value)
+static int mdio_read(uint16_t reg, uint16_t *value)
 {
     *value = 0;
-    return mdio(reg, value, 0);
+    return mdio_ioctl(reg, value, 0);
 }
 
-static int choose_mdio_mode(void)
+static int mdio_write(uint16_t reg, uint16_t value)
 {
-    u16 value;
-    int result;
-    ioctl_mode = 1;
-    result = mdio_read(REG_ADDR, &value);
-    if (result == 0) {
-        print("MDIO ioctl: Broadcom private et driver\n");
+    return mdio_ioctl(reg, &value, 1);
+}
+
+static int choose_access(void)
+{
+    uint16_t value = 0;
+    int status;
+    mode = MODE_ET_PRIVATE;
+    status = mdio_read(MDIO_ADDR, &value);
+    if (!status) {
+        puts("MDIO interface: Broadcom private ethernet ioctl");
         return 0;
     }
-    print_error("Broadcom private ioctl", result);
-    ioctl_mode = 2;
-    result = mdio_read(REG_ADDR, &value);
-    if (result == 0) {
-        print("MDIO ioctl: Linux MII driver\n");
+    fprintf(stderr, "Broadcom private ioctl failed: %s (%d)\n",
+            strerror(-status), -status);
+
+    mode = MODE_STANDARD_MII;
+    status = mdio_read(MDIO_ADDR, &value);
+    if (!status) {
+        puts("MDIO interface: standard Linux MII ioctl");
         return 0;
     }
-    print_error("Linux MII ioctl", result);
+    fprintf(stderr, "Standard Linux MII ioctl failed: %s (%d)\n",
+            strerror(-status), -status);
+    mode = MODE_NONE;
     return -1;
 }
 
-static int select_register(u8 page, u8 reg, u16 operation)
+static int select_register(uint8_t page, uint8_t reg, uint16_t operation)
 {
-    u16 value;
-    int attempt;
-    int error = mdio_write(REG_PAGE, (u16)((page << 8) | PAGE_ENABLE));
+    uint16_t status;
+    int error;
+    unsigned attempt;
+
+    error = mdio_write(MDIO_PAGE, (uint16_t)((page << 8) | MDIO_PAGE_ENABLE));
     if (error) return error;
-    error = mdio_write(REG_ADDR, (u16)((reg << 8) | operation));
+
+    error = mdio_write(MDIO_ADDR, (uint16_t)((reg << 8) | operation));
     if (error) return error;
-    for (attempt = 0; attempt < 1000; attempt++) {
-        error = mdio_read(REG_ADDR, &value);
+
+    for (attempt = 0; attempt < 100; attempt++) {
+        error = mdio_read(MDIO_ADDR, &status);
         if (error) return error;
-        if ((value & 3) == 0) return 0;
+        if (!(status & 3)) return 0;
     }
-    return -110;
+    return -ETIMEDOUT;
 }
 
-static int reg_read16(u8 page, u8 reg, u16 *value)
+static int switch_read16(uint8_t page, uint8_t reg, uint16_t *value)
 {
-    int error = select_register(page, reg, ADDR_READ);
+    int error = select_register(page, reg, MDIO_OP_READ);
     if (error) return error;
-    return mdio_read(REG_DATA, value);
+    return mdio_read(MDIO_DATA, value);
 }
 
-static int reg_write16(u8 page, u8 reg, u16 value)
+static int switch_write16(uint8_t page, uint8_t reg, uint16_t value)
 {
-    int error = mdio_write(REG_DATA, value);
+    int error = mdio_write(MDIO_DATA, value);
     if (error) return error;
-    return select_register(page, reg, ADDR_WRITE);
+    return select_register(page, reg, MDIO_OP_WRITE);
 }
 
-static int read_mirror(u16 *capture, u16 *ingress, u16 *egress)
+struct mirror_config {
+    uint16_t capture, ingress, egress;
+};
+
+static int read_mirror(struct mirror_config *config)
 {
     int error;
-    error = reg_read16(MGMT_PAGE, MIRROR_CAP, capture);
-    if (error) { print_error("Read mirror capture", error); return -1; }
-    error = reg_read16(MGMT_PAGE, MIRROR_ING, ingress);
-    if (error) { print_error("Read mirror ingress", error); return -1; }
-    error = reg_read16(MGMT_PAGE, MIRROR_EGR, egress);
-    if (error) { print_error("Read mirror egress", error); return -1; }
-    return 0;
-}
-
-static void print_values(u16 capture, u16 ingress, u16 egress)
-{
-    print("capture: "); hex16(capture); print("\n");
-    print("ingress: "); hex16(ingress); print("\n");
-    print("egress:  "); hex16(egress); print("\n");
-}
-
-static int restore_values(u16 capture, u16 ingress, u16 egress)
-{
-    int error;
-    /* Disable mirroring before restoring filter masks. */
-    error = reg_write16(MGMT_PAGE, MIRROR_CAP, (u16)(capture & ~MIRROR_ENABLE_BIT));
+    error = switch_read16(MGMT_PAGE, MIR_CAP, &config->capture);
     if (error) goto failed;
-    error = reg_write16(MGMT_PAGE, MIRROR_ING, ingress);
+    error = switch_read16(MGMT_PAGE, MIR_ING, &config->ingress);
     if (error) goto failed;
-    error = reg_write16(MGMT_PAGE, MIRROR_EGR, egress);
-    if (error) goto failed;
-    error = reg_write16(MGMT_PAGE, MIRROR_CAP, capture);
+    error = switch_read16(MGMT_PAGE, MIR_EGR, &config->egress);
     if (error) goto failed;
     return 0;
 failed:
-    print_error("Restore register", error);
+    fprintf(stderr, "Mirror register read failed: %s (%d)\n",
+            strerror(-error), -error);
+    return error;
+}
+
+static void show_config(const struct mirror_config *config)
+{
+    printf("capture: 0x%04x\ningress: 0x%04x\negress:  0x%04x\n",
+           config->capture, config->ingress, config->egress);
+}
+
+static int restore_config(const struct mirror_config *original)
+{
+    int error;
+    error = switch_write16(MGMT_PAGE, MIR_CAP,
+                           (uint16_t)(original->capture & ~MIR_ENABLED));
+    if (error) goto failed;
+    error = switch_write16(MGMT_PAGE, MIR_ING, original->ingress);
+    if (error) goto failed;
+    error = switch_write16(MGMT_PAGE, MIR_EGR, original->egress);
+    if (error) goto failed;
+    error = switch_write16(MGMT_PAGE, MIR_CAP, original->capture);
+    if (error) goto failed;
+    return 0;
+failed:
+    fprintf(stderr, "Restoring mirroring failed: %s (%d)\n",
+            strerror(-error), -error);
+    return error;
+}
+
+static int enable_mirror(const struct mirror_config *original)
+{
+    struct mirror_config expected, checked;
+    int error;
+    if (original->capture & MIR_ENABLED) {
+        fputs("Refusing to overwrite existing active mirroring.\n", stderr);
+        return -1;
+    }
+    if (original->capture == 0xffff || original->ingress == 0xffff
+        || original->egress == 0xffff) {
+        fputs("Refusing implausible register values.\n", stderr);
+        return -1;
+    }
+    expected.capture = (uint16_t)(MIR_ENABLED | CPU_PORT);
+    expected.ingress = (uint16_t)((1u << WAN_PORT) | (1u << ICOTERA_PORT));
+    expected.egress = 0;
+
+    printf("RESTORE COMMAND: /tmp/switchmirror restore 0x%04x 0x%04x 0x%04x\n",
+           original->capture, original->ingress, original->egress);
+    fflush(stdout);
+
+    error = switch_write16(MGMT_PAGE, MIR_ING, expected.ingress);
+    if (error) goto failed;
+    error = switch_write16(MGMT_PAGE, MIR_EGR, expected.egress);
+    if (error) goto failed;
+    error = switch_write16(MGMT_PAGE, MIR_CAP, expected.capture);
+    if (error) goto failed;
+
+    error = read_mirror(&checked);
+    if (!error && memcmp(&checked, &expected, sizeof(checked)) == 0) {
+        puts("Mirroring registers written and read back successfully.");
+        return 0;
+    }
+
+    fputs("Mirror verification failed; attempting to restore.\n", stderr);
+    restore_config(original);
+    return -1;
+failed:
+    fprintf(stderr, "Enabling mirror failed: %s (%d); restoring.\n",
+            strerror(-error), -error);
+    restore_config(original);
     return -1;
 }
 
-static int enable_mirror(u16 old_capture, u16 old_ingress, u16 old_egress)
+static int parse_hex(const char *s, uint16_t *number)
 {
-    u16 capture = 0x8008u;
-    u16 ingress = 0x0011u;
-    u16 check_capture, check_ingress, check_egress;
-    int error;
-    if (old_capture & MIRROR_ENABLE_BIT) {
-        print("Mirror already enabled. Do not override existing configuration.\n");
-        return -1;
-    }
-    /* Mirror ingress frames from physical ports 0 and 4 to CPU port 8. */
-    print("Restore with: /tmp/switchmirror restore ");
-    hex16(old_capture); print(" ");
-    hex16(old_ingress); print(" ");
-    hex16(old_egress); print("\n");
-    error = reg_write16(MGMT_PAGE, MIRROR_ING, ingress);
-    if (error) goto failed;
-    error = reg_write16(MGMT_PAGE, MIRROR_EGR, 0);
-    if (error) goto failed;
-    error = reg_write16(MGMT_PAGE, MIRROR_CAP, capture);
-    if (error) goto failed;
-    if (read_mirror(&check_capture, &check_ingress, &check_egress) != 0 ||
-        check_capture != capture || check_ingress != ingress || check_egress != 0) {
-        print("Verification failed. Restore original values.\n");
-        restore_values(old_capture, old_ingress, old_egress);
-        return -1;
-    }
-    print("Mirror enabled and verified.\n");
+    unsigned long result;
+    char *end;
+    errno = 0;
+    result = strtoul(s, &end, 16);
+    if (errno || end == s || *end || result > 0xffff) return -1;
+    *number = (uint16_t)result;
     return 0;
-failed:
-    print_error("Enable mirror", error);
-    restore_values(old_capture, old_ingress, old_egress);
-    return -1;
 }
 
 int main(int argc, char **argv)
 {
-    u16 capture = 0, ingress = 0, egress = 0;
+    struct mirror_config current, original;
+    int error;
     int result = 0;
-    if (argc < 2 ||
-        (!equal(argv[1], "probe") && !equal(argv[1], "enable") &&
-         !equal(argv[1], "restore"))) {
-        print("Usage: switchmirror probe | enable | restore <capture> <ingress> <egress>\n");
-        return 2;
+    int is_probe, is_enable, is_restore;
+
+    if (argc < 2) goto usage;
+    is_probe = !strcmp(argv[1], "probe");
+    is_enable = !strcmp(argv[1], "enable");
+    is_restore = !strcmp(argv[1], "restore");
+    if (!is_probe && !is_enable && !is_restore) goto usage;
+    if (is_restore && argc != 5) goto usage;
+    if (!is_restore && argc != 2) goto usage;
+
+    if (is_restore) {
+        if (parse_hex(argv[2], &original.capture)
+            || parse_hex(argv[3], &original.ingress)
+            || parse_hex(argv[4], &original.egress)) goto usage;
     }
-    sockfd = raw_syscall3(SYS_SOCKET, AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        print_error("Open socket", sockfd);
+
+    printf("switchmirror: normal libc startup; command=%s\n", argv[1]);
+    fflush(stdout);
+    socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_fd < 0) {
+        perror("socket");
         return 3;
     }
-    if (choose_mdio_mode() != 0) {
-        print("No supported MDIO access. Leave switch unchanged.\n");
-        raw_syscall3(SYS_CLOSE, sockfd, 0, 0);
-        return 4;
+    if (choose_access()) {
+        fputs("No working switch-MDIO ioctl, leaving switch unchanged.\n",
+              stderr);
+        result = 4;
+        goto done;
     }
-    if (read_mirror(&capture, &ingress, &egress) != 0) {
-        raw_syscall3(SYS_CLOSE, sockfd, 0, 0);
-        return 5;
+    error = read_mirror(&current);
+    if (error) {
+        result = 5;
+        goto done;
     }
-    print_values(capture, ingress, egress);
-    if (capture == 0xffffu || ingress == 0xffffu || egress == 0xffffu) {
-        print("Unexpected register values. Abort without changing mirroring.\n");
-        raw_syscall3(SYS_CLOSE, sockfd, 0, 0);
-        return 7;
+    show_config(&current);
+    if (current.capture == 0xffff || current.ingress == 0xffff
+        || current.egress == 0xffff) {
+        fputs("Implausible all-ones register reading; aborting.\n", stderr);
+        result = 6;
+        goto done;
     }
-    if (equal(argv[1], "enable")) {
-        result = enable_mirror(capture, ingress, egress);
-    } else if (equal(argv[1], "restore")) {
-        u16 old_capture, old_ingress, old_egress;
-        if (argc != 5 ||
-            !parse_hex16(argv[2], &old_capture) ||
-            !parse_hex16(argv[3], &old_ingress) ||
-            !parse_hex16(argv[4], &old_egress)) {
-            print("Specify three original hexadecimal values.\n");
-            result = -1;
-        } else {
-            result = restore_values(old_capture, old_ingress, old_egress);
-            if (!result) print("Original mirror values restored.\n");
-        }
+    if (is_probe) {
+        puts("Probe completed. Mirroring settings unchanged.");
+    } else if (is_enable) {
+        result = enable_mirror(&current) ? 7 : 0;
     } else {
-        print("Read-only probe complete.\n");
+        result = restore_config(&original) ? 8 : 0;
+        if (!result) puts("Original mirror registers restored.");
     }
-    raw_syscall3(SYS_CLOSE, sockfd, 0, 0);
-    return result ? 6 : 0;
-}
 
-/* Enter the application without a libc startup dependency. */
-__asm__(
-    ".section .text\n"
-    ".globl _start\n"
-    "_start:\n"
-    "lui $28, %hi(_gp)\n"
-    "addiu $28, $28, %lo(_gp)\n"
-    "lw $4, 0($29)\n"
-    "addiu $5, $29, 4\n"
-    "jal main\n"
-    "nop\n"
-    "move $4, $2\n"
-    "li $2, 4001\n"
-    "syscall\n"
-    "1: b 1b\n"
-    "nop\n"
-);
+done:
+    close(socket_fd);
+    return result;
+
+usage:
+    fputs("Usage: switchmirror probe | enable | restore HEX_CAPTURE HEX_INGRESS HEX_EGRESS\n",
+          stderr);
+    return 2;
+}
