@@ -34,7 +34,7 @@ jobs:
           echo "6db98378e776cc7120c698d3481942fc2e2489d4179de7f075ea75600fda2fb5  toolchain.tar.zst" | sha256sum --check
           mkdir toolchain
           tar --zstd -xf toolchain.tar.zst -C toolchain
-          compiler=$(find "$GITHUB_WORKSPACE/toolchain" -type f -name 'mipsel-openwrt-linux-musl-gcc' | head -n 1)
+          compiler=$(find "$GITHUB_WORKSPACE/toolchain" -name 'mipsel-openwrt-linux-musl-gcc' -print -quit)
           if [ -z "$compiler" ]; then
             find toolchain -type f -name '*gcc*' | head -n 20
             echo "OpenWrt cross-compiler not found" >&2
