@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu qemu-user file
+            gcc-mipsel-linux-gnu libc6-dev-mipsel-cross binutils-mipsel-linux-gnu qemu-user file
 
       - name: Cross-compile static MIPS32 little-endian binary
         run: make
