@@ -1,13 +1,14 @@
-name: Cross-compile MIPS32 BE
+name: Cross-compile and release MIPS32 BE
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -43,18 +44,44 @@ jobs:
       - name: Smoke-test CLI with QEMU MIPS
         run: make smoke
 
-      - name: Generate checksum
+      - name: Package executable and checksum
         run: |
+          cp dist/switchmirror dist/switchmirror-mips32-be
           cd dist
-          sha256sum switchmirror > SHA256SUMS
+          sha256sum switchmirror-mips32-be > SHA256SUMS
 
-      - name: Upload cross-compiled binary
+      - name: Upload workflow artifact for debugging
         uses: actions/upload-artifact@v4
         with:
           name: switchmirror-mips32-be
           path: |
-            dist/switchmirror
+            dist/switchmirror-mips32-be
             dist/SHA256SUMS
             README.md
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish download in GitHub Releases
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            title="BCM53125 ${tag}"
+            prerelease_args=()
+          else
+            tag="v0.1.0-alpha.${GITHUB_RUN_NUMBER}"
+            title="BCM53125 development build ${GITHUB_RUN_NUMBER}"
+            prerelease_args=(--prerelease)
+          fi
+          gh release create "${tag}" \
+            dist/switchmirror-mips32-be \
+            dist/SHA256SUMS \
+            --target "${GITHUB_SHA}" \
+            --title "${title}" \
+            --notes "Experimental static MIPS32 big-endian router binary built from commit ${GITHUB_SHA}. Untested on actual RT-N66U hardware. Run 'probe' first. SHA256SUMS included." \
+            "${prerelease_args[@]}"
+          echo "Release URL: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${tag}" >> "${GITHUB_STEP_SUMMARY}"
