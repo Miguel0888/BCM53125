@@ -4,11 +4,11 @@ Kleines Linux-MIPS-Hilfsprogramm zum Prüfen und, nach Freigabe durch den Benutz
 
 **Zielplattform:** Asus RT-N66U mit DD-WRT r44715, Kernel 4.4.241, MIPS32 **Little Endian**, Linux o32. Der Build ist freestanding, statisch und benötigt keine libc auf dem Router.
 
-> **Status: experimentell.** Die Cross-Compilation und der CLI-Smoke-Test werden in GitHub Actions geprüft. Ob die vorhandenen Ethernet-Treiber-IOCTLs auf der konkreten Router-Firmware funktionieren, kann nur ein Probe-Lauf am Gerät zeigen. Ein erfolgreicher Build garantiert weder einen sicheren Registerzugriff noch einen vollständigen Paketmitschnitt.
+> **Status: experimentell.** Die Cross-Compilation und der CLI-/Probe-Smoke-Test ohne FPU werden in GitHub Actions geprüft. Ob die vorhandenen Ethernet-Treiber-IOCTLs auf der konkreten Router-Firmware funktionieren, kann nur ein Probe-Lauf am Gerät zeigen. Ein erfolgreicher Build garantiert weder einen sicheren Registerzugriff noch einen vollständigen Paketmitschnitt.
 
 ## Downloads: GitHub Releases
 
-Die aktuelle MIPS32-Little-Endian-Binary steht unter **[Releases](../../releases)** zur Verfügung. Jeder Push auf `main` veröffentlicht nach erfolgreichem Cross-Compile einen als **Pre-release** markierten Entwicklungsstand. Bei Push eines Versions-Tags wie `v1.0.0` entsteht eine reguläre Release.
+Die aktuelle MIPS32-Little-Endian-Soft-Float-Binary steht unter **[Releases](../../releases)** zur Verfügung. Jeder Push auf `main` veröffentlicht nach erfolgreichem Cross-Compile einen als **Pre-release** markierten Entwicklungsstand. Bei Push eines Versions-Tags wie `v1.0.0` entsteht eine reguläre Release.
 
 Jede Release enthält:
 
@@ -21,13 +21,13 @@ Jede Release enthält:
 
 Unter [Actions](../../actions/workflows/cross-compile.yml) läuft der Build bei jedem Push auf `main`, jedem Pull Request, bei Versions-Tags und beim manuellen Start.
 
-GitHub Actions installiert `gcc-mipsel-linux-gnu` und `qemu-user`, erzeugt ein statisches ELF32-MIPS-Little-Endian-Programm, prüft den ELF-Header und führt den Kommandozeilen-Smoke-Test unter QEMU aus.
+GitHub Actions verwendet die offizielle OpenWrt-Toolchain für `bcm47xx/mips74k` (musl, Soft-Float) und prüft deren SHA-256. Es kompiliert statisch und führt den CLI- sowie den `probe`-Pfad mit QEMU auf einer CPU ohne FPU (`24Kc`) aus. Auf echter DD-WRT-Hardware ist auch dieser Build erst nach einem erfolgreichen Test bestätigt.
 
 Lokal unter Debian/Ubuntu:
 
 ```sh
-sudo apt-get install gcc-mipsel-linux-gnu binutils-mipsel-linux-gnu qemu-user
-make
+sudo apt-get install qemu-user zstd curl
+make CC=/pfad/zum/openwrt-toolchain/bin/mipsel-openwrt-linux-musl-gcc
 make smoke
 ```
 

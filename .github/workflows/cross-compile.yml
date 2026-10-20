@@ -22,7 +22,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            gcc-mipsel-linux-gnu libc6-dev-mipsel-cross binutils-mipsel-linux-gnu qemu-user file
+            qemu-user file zstd curl ca-certificates
+
+      - name: Install matching OpenWrt bcm47xx/mips74k toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          filename="openwrt-toolchain-24.10.5-bcm47xx-mips74k_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          url="https://downloads.openwrt.org/releases/24.10.5/targets/bcm47xx/mips74k/$filename"
+          curl --fail --location --retry 4 --retry-all-errors --output toolchain.tar.zst "$url"
+          echo "6db98378e776cc7120c698d3481942fc2e2489d4179de7f075ea75600fda2fb5  toolchain.tar.zst" | sha256sum --check
+          mkdir toolchain
+          tar --zstd -xf toolchain.tar.zst -C toolchain
+          compiler=$(find "$GITHUB_WORKSPACE/toolchain" -type f -name 'mipsel-openwrt-linux-musl-gcc' | head -n 1)
+          if [ -z "$compiler" ]; then
+            find toolchain -type f -name '*gcc*' | head -n 20
+            echo "OpenWrt cross-compiler not found" >&2
+            exit 1
+          fi
+          echo "CC=$compiler" >> "$GITHUB_ENV"
+          "$compiler" --version | head -n 1
+
 
       - name: Cross-compile static MIPS32 little-endian binary
         run: make
@@ -41,7 +61,7 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke-test CLI with QEMU MIPS Little Endian
+      - name: Smoke-test on MIPS CPU without FPU (QEMU 24Kc)
         run: make smoke
 
       - name: Package executable and checksum
