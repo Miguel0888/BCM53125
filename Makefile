@@ -1,7 +1,7 @@
 CROSS_COMPILE ?= mipsel-linux-gnu-
 CC = $(CROSS_COMPILE)gcc
 
-CFLAGS = -std=c11 -O2 -Wall -Wextra -Werror -march=mips32r2 -mabi=32 -EL -msoft-float
+CFLAGS = -std=c11 -O2 -Wall -Wextra -Werror -march=mips32r2 -mabi=32 -EL
 LDFLAGS = -static -no-pie -Wl,--build-id=none
 
 .PHONY: all clean smoke
