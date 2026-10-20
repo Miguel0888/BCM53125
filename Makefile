@@ -13,15 +13,15 @@ dist/switchmirror: src/switchmirror.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 smoke: dist/switchmirror
-	@set +e; output=$$(qemu-mipsel ./dist/switchmirror 2>&1); result=$$?; \
+	@set +e; output=$$(qemu-mipsel -cpu 24Kc ./dist/switchmirror 2>&1); result=$$?; \
 	set -e; printf '%s\n' "$$output"; \
 	test $$result -eq 2 && printf '%s\n' "$$output" | grep -q 'Usage: switchmirror'
-	@set +e; output=$$(qemu-mipsel ./dist/switchmirror probe 2>&1); result=$$?; \
+	@set +e; output=$$(qemu-mipsel -cpu 24Kc ./dist/switchmirror probe 2>&1); result=$$?; \
 	set -e; printf '%s\n' "$$output"; \
 	test $$result -eq 4 || test $$result -eq 5; \
 	printf '%s\n' "$$output" | grep -q 'normal libc startup'; \
 	printf '%s\n' "$$output" | grep -Eq 'ioctl failed|Mirror register read failed'
-	@set +e; output=$$(qemu-mipsel ./dist/switchmirror restore invalid 1 2 2>&1); result=$$?; \
+	@set +e; output=$$(qemu-mipsel -cpu 24Kc ./dist/switchmirror restore invalid 1 2 2>&1); result=$$?; \
 	set -e; printf '%s\n' "$$output"; test $$result -eq 2
 
 clean:

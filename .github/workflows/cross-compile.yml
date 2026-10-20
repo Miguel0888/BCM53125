@@ -45,7 +45,7 @@ jobs:
 
 
       - name: Cross-compile static MIPS32 little-endian binary
-        run: make
+        run: make CC="$CC"
 
       - name: Verify ELF target and static linking
         shell: bash
