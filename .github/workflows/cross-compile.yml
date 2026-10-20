@@ -1,0 +1,60 @@
+name: Cross-compile MIPS32 BE
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install MIPS cross-compiler and emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            gcc-mips-linux-gnu binutils-mips-linux-gnu qemu-user file
+
+      - name: Cross-compile static MIPS32 big-endian binary
+        run: make
+
+      - name: Verify ELF target and static linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          file dist/switchmirror
+          readelf -h dist/switchmirror
+          readelf -h dist/switchmirror | grep -Eq 'Class:.*ELF32'
+          readelf -h dist/switchmirror | grep -Eq 'Data:.*big endian'
+          readelf -h dist/switchmirror | grep -Eq 'Machine:.*MIPS'
+          if readelf -l dist/switchmirror | grep -q INTERP; then
+            echo 'Unexpected dynamic interpreter' >&2
+            exit 1
+          fi
+
+      - name: Smoke-test CLI with QEMU MIPS
+        run: make smoke
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          sha256sum switchmirror > SHA256SUMS
+
+      - name: Upload cross-compiled binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: switchmirror-mips32-be
+          path: |
+            dist/switchmirror
+            dist/SHA256SUMS
+            README.md
+          if-no-files-found: error
+          retention-days: 30
