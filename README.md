@@ -241,7 +241,7 @@ Mit dem neuen Session-Identifier `0xf170` folgt die PPP-Link-Control-Aushandlung
 | **21** | Configure-Ack vom Icotera | Bestätigt den AC-Request aus Frame 20 |
 | **22–23** | Echo-Request und Echo-Reply | LCP-Erreichbarkeit nach der Aushandlung |
 
-Die LCP-MRU von **1492** ist typisch für PPPoE: Zum Ethernet-MTU von 1500 Byte kommen 8 Byte PPPoE-/PPP-Overhead hinzu. Hier ist **MRU** im Mitschnitt belegt; die allgemeine Konfiguration des IP-MTU muss dazu passend gewählt werden.
+Die LCP-MRU von **1492** ist typisch für PPPoE: Von den üblichen **1500 Byte Ethernet-MTU** werden **8 Byte für PPPoE- und PPP-Header** benötigt, sodass maximal **1492 Byte für PPP-Nutzdaten** bleiben. Hier ist **MRU** im Mitschnitt belegt; die IP-MTU muss dazu passend konfiguriert werden.
 
 Frame **25** enthält außerdem einen **LCP Protocol-Reject** (`Code 8`) von AC1. Er wird getrennt von der erfolgreichen LCP-Konfiguration beobachtet. Der zurückgewiesene PPP-Protokollwert beginnt mit `0x80fd`; ohne weitere Pakete lässt sich daraus **kein Verbindungsfehler** ableiten, denn IPCP wird anschließend erfolgreich abgeschlossen.
 
