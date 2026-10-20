@@ -1,9 +1,9 @@
 CROSS_COMPILE ?= mips-linux-gnu-
 CC = $(CROSS_COMPILE)gcc
 
-CFLAGS = -std=c99 -O2 -Wall -Wextra -Werror -march=mips32r2 -mabi=32 -EB \
+CFLAGS = -std=c99 -O2 -Wall -Wextra -Werror -march=mips32r2 -mabi=32 -EB -msoft-float \
          -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -mno-abicalls -G0
-LDFLAGS = -nostdlib -static -no-pie -Wl,-e,_start -Wl,--build-id=none -Wl,-z,noexecstack
+LDFLAGS = -nostdlib -static -no-pie -Wl,-Ttext-segment=0x400000 -Wl,-e,_start -Wl,--build-id=none -Wl,-z,noexecstack
 
 .PHONY: all clean smoke
 
